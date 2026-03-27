@@ -1,0 +1,107 @@
+name: k6-playground
+
+services:
+  workspace:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    container_name: k6-playground-workspace
+    working_dir: /workspaces/K6_Playground
+    command: bash -lc "bash .devcontainer/bootstrap-workspace.sh"
+    environment:
+      BASE_URL: http://edge
+      JUPYTER_PORT: 8888
+      PROMETHEUS_URL: http://prometheus:9090
+    volumes:
+      - .:/workspaces/K6_Playground
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      edge:
+        condition: service_healthy
+      origin:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    networks:
+      - playground
+    ports:
+      - "8888:8888"
+
+  origin:
+    build:
+      context: ./origin
+    container_name: k6-playground-origin
+    environment:
+      PORT: 8000
+    expose:
+      - "8000"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read()
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - playground
+
+  edge:
+    image: nginx:1.27-alpine
+    container_name: k6-playground-edge
+    depends_on:
+      origin:
+        condition: service_healthy
+    volumes:
+      - ./edge/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./edge/logs:/var/log/nginx
+      - edge-cache:/var/cache/nginx
+    ports:
+      - "8080:80"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O - http://127.0.0.1/healthz || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - playground
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: k6-playground-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+      - --web.enable-remote-write-receiver
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O - http://localhost:9090/-/healthy || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - playground
+
+volumes:
+  edge-cache:
+  prometheus-data:
+
+networks:
+  playground:
+    name: k6-playground-network

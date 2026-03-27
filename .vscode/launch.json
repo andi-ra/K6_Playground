@@ -1,0 +1,70 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Run origin app",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "bash scripts/run-origin.sh",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "HOST": "0.0.0.0",
+        "PORT": "8000"
+      }
+    },
+    {
+      "name": "Python: Query Prometheus",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "bash scripts/run-prometheus-query.sh",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PROMETHEUS_URL": "http://localhost:9090"
+      }
+    },
+    {
+      "name": "k6: Run cache lock probe",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "bash scripts/run-cache-lock-probe.sh",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "BASE_URL": "http://localhost:8080",
+        "PROMETHEUS_URL": "http://localhost:9090"
+      }
+    },
+    {
+      "name": "k6: Run smoke.js",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "bash scripts/run-smoke.sh",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "BASE_URL": "http://localhost:8080",
+        "PROMETHEUS_URL": "http://localhost:9090"
+      }
+    },
+    {
+      "name": "k6: Run current file",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "bash scripts/run-smoke.sh \"${relativeFile}\"",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "BASE_URL": "http://localhost:8080",
+        "PROMETHEUS_URL": "http://localhost:9090"
+      }
+    },
+    {
+      "name": "k6: Run smoke.js with heavier load",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "VUS=25 DURATION=3m bash scripts/run-smoke.sh",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "BASE_URL": "http://localhost:8080",
+        "PROMETHEUS_URL": "http://localhost:9090"
+      }
+    }
+  ]
+}

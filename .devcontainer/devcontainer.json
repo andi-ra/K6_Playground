@@ -1,0 +1,55 @@
+{
+  "name": "K6 Playground",
+  "dockerComposeFile": [
+    "../docker-compose.yml"
+  ],
+  "service": "workspace",
+  "runServices": [
+    "origin",
+    "edge",
+    "prometheus",
+    "workspace"
+  ],
+  "workspaceFolder": "/workspaces/K6_Playground",
+  "shutdownAction": "stopCompose",
+  "overrideCommand": false,
+  "remoteUser": "root",
+  "postCreateCommand": "git config --global --add safe.directory /workspaces/K6_Playground",
+  "forwardPorts": [
+    8000,
+    8080,
+    8888,
+    9090
+  ],
+  "portsAttributes": {
+    "8000": {
+      "label": "origin"
+    },
+    "8080": {
+      "label": "edge"
+    },
+    "8888": {
+      "label": "jupyterlab"
+    },
+    "9090": {
+      "label": "prometheus"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "grafana.vscode-jsonnet"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "jupyter.jupyterServerType": "local",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}
+
