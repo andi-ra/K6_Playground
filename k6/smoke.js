@@ -66,6 +66,13 @@ function requestAndCheck(url, objectName) {
   return res;
 }
 
+function purgeEdgeCache() {
+  return http.request("PURGE", `${baseUrl}/cache`, null, {
+    tags: { name: "edge_cache_purge" },
+    timeout: "30s",
+  });
+}
+
 // -----------------------------
 // Thresholds
 // -----------------------------
@@ -203,4 +210,11 @@ export function vodLockProbe() {
     `${baseUrl}/vod/${HOT_VOD_TITLE}/seg_${HOT_VOD_SEGMENT}.ts?variant=${HOT_VOD_VARIANT}`,
     OBJECTS.vodSegment.name
   );
+}
+
+export function teardown() {
+  const response = purgeEdgeCache();
+  check(response, {
+    "edge cache purge status is 200": (r) => r.status === 200,
+  });
 }

@@ -54,6 +54,8 @@ services:
     image: nginx:1.27-alpine
     container_name: k6-playground-edge
     depends_on:
+      edge-admin:
+        condition: service_healthy
       origin:
         condition: service_healthy
     volumes:
@@ -70,6 +72,29 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    networks:
+      - playground
+
+  edge-admin:
+    build:
+      context: ./edge-admin
+    container_name: k6-playground-edge-admin
+    environment:
+      CACHE_ROOT: /var/cache/nginx
+    expose:
+      - "9000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:9000/healthz', timeout=5).read()
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    volumes:
+      - edge-cache:/var/cache/nginx
     networks:
       - playground
 
