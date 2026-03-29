@@ -11,3 +11,4 @@ __pycache__/
 python/.venv/
 prometheus-data/
 
+edge/logs/*
