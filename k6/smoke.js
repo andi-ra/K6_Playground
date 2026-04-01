@@ -2,6 +2,11 @@ import http from "k6/http";
 import { check, sleep } from "k6";
 
 const baseUrl = __ENV.BASE_URL || "http://edge";
+const LABS = {
+  baseline: "edge_cache_baseline",
+  openresty: "openresty_runtime",
+  admin: "edge_admin",
+};
 
 // -----------------------------
 // Object taxonomy
@@ -14,6 +19,10 @@ const OBJECTS = {
   vodManifest: { name: "vod_manifest", p95Ms: 500 },
   vodPlaylist: { name: "vod_playlist", p95Ms: 600 },
   vodSegment: { name: "vod_segment", p95Ms: 900 },
+
+  openrestyTransform: { name: "openresty_transform", p95Ms: 450 },
+  openrestyPolicy: { name: "openresty_policy", p95Ms: 350 },
+  openrestyGcProbe: { name: "openresty_gc_probe", p95Ms: 900 },
 };
 
 // -----------------------------
@@ -40,6 +49,13 @@ const LOCK_PROBE_SPIKE = Number(__ENV.LOCK_PROBE_SPIKE || 0);
 const HOT_VOD_TITLE = __ENV.HOT_VOD_TITLE || "movie1";
 const HOT_VOD_SEGMENT = String(__ENV.HOT_VOD_SEGMENT || "0007");
 const HOT_VOD_VARIANT = __ENV.HOT_VOD_VARIANT || "720p";
+const OPENRESTY_VUS = Number(__ENV.OPENRESTY_VUS || 0);
+const OPENRESTY_SEG_S = Number(__ENV.OPENRESTY_SEG_S || 1);
+const OPENRESTY_BURST_RATE = Number(__ENV.OPENRESTY_BURST_RATE || 0);
+const OPENRESTY_BURST_SPIKE = Number(__ENV.OPENRESTY_BURST_SPIKE || 0);
+const OPENRESTY_BURST_BASE_DURATION = __ENV.OPENRESTY_BURST_BASE_DURATION || "30s";
+const OPENRESTY_BURST_SPIKE_DURATION = __ENV.OPENRESTY_BURST_SPIKE_DURATION || "30s";
+const OPENRESTY_BURST_RECOVERY_DURATION = __ENV.OPENRESTY_BURST_RECOVERY_DURATION || "60s";
 
 // -----------------------------
 // Helpers
@@ -48,8 +64,8 @@ function pick(xs) {
   return xs[Math.floor(Math.random() * xs.length)];
 }
 
-function taggedGet(url, objectName) {
-  return http.get(url, { tags: { name: objectName } });
+function taggedGet(url, objectName, extraTags = {}) {
+  return http.get(url, { tags: { name: objectName, ...extraTags } });
 }
 
 function check200(response, kind) {
@@ -60,15 +76,20 @@ function check200(response, kind) {
   );
 }
 
-function requestAndCheck(url, objectName) {
-  const res = taggedGet(url, objectName);
+function requestAndCheck(url, objectName, extraTags = {}) {
+  const res = taggedGet(url, objectName, extraTags);
   check200(res, objectName);
   return res;
 }
 
 function purgeEdgeCache() {
   return http.request("PURGE", `${baseUrl}/cache`, null, {
-    tags: { name: "edge_cache_purge" },
+    tags: {
+      name: "edge_cache_purge",
+      lab: LABS.admin,
+      edge_mode: "edge_admin",
+      experiment: "cache_purge",
+    },
     timeout: "30s",
   });
 }
@@ -93,6 +114,22 @@ export const options = {
     [`checks{kind:${OBJECTS.vodManifest.name}}`]: ["rate>0.95"],
     [`checks{kind:${OBJECTS.vodPlaylist.name}}`]: ["rate>0.95"],
     [`checks{kind:${OBJECTS.vodSegment.name}}`]: ["rate>0.95"],
+    ...(OPENRESTY_VUS > 0 || OPENRESTY_BURST_RATE > 0 || OPENRESTY_BURST_SPIKE > 0
+      ? {
+          [`http_req_duration{name:${OBJECTS.openrestyTransform.name}}`]: [
+            `p(95)<${OBJECTS.openrestyTransform.p95Ms}`,
+          ],
+          [`http_req_duration{name:${OBJECTS.openrestyPolicy.name}}`]: [
+            `p(95)<${OBJECTS.openrestyPolicy.p95Ms}`,
+          ],
+          [`http_req_duration{name:${OBJECTS.openrestyGcProbe.name}}`]: [
+            `p(95)<${OBJECTS.openrestyGcProbe.p95Ms}`,
+          ],
+          [`checks{kind:${OBJECTS.openrestyTransform.name}}`]: ["rate>0.95"],
+          [`checks{kind:${OBJECTS.openrestyPolicy.name}}`]: ["rate>0.95"],
+          [`checks{kind:${OBJECTS.openrestyGcProbe.name}}`]: ["rate>0.95"],
+        }
+      : {}),
   },
 
   scenarios: {
@@ -101,7 +138,7 @@ export const options = {
       exec: "liveSteady",
       vus: LIVE_VUS,
       duration: __ENV.DURATION || "5m",
-      tags: { traffic: "live", phase: "steady" },
+      tags: { traffic: "live", phase: "steady", lab: LABS.baseline, edge_mode: "proxy_cache" },
     },
 
     vod_steady: {
@@ -109,7 +146,7 @@ export const options = {
       exec: "vodSteady",
       vus: VOD_VUS,
       duration: __ENV.DURATION || "5m",
-      tags: { traffic: "vod", phase: "steady" },
+      tags: { traffic: "vod", phase: "steady", lab: LABS.baseline, edge_mode: "proxy_cache" },
     },
 
     ...(LIVE_JOIN_RATE > 0 || LIVE_JOIN_SPIKE > 0
@@ -126,7 +163,12 @@ export const options = {
               { target: LIVE_JOIN_SPIKE, duration: "30s" },
               { target: LIVE_JOIN_RATE, duration: "60s" },
             ],
-            tags: { traffic: "live", phase: "startup" },
+            tags: {
+              traffic: "live",
+              phase: "startup",
+              lab: LABS.baseline,
+              edge_mode: "proxy_cache",
+            },
           },
         }
       : {}),
@@ -145,7 +187,53 @@ export const options = {
               { target: LOCK_PROBE_SPIKE, duration: "30s" },
               { target: LOCK_PROBE_RATE, duration: "60s" },
             ],
-            tags: { traffic: "vod", phase: "cache_lock_probe" },
+            tags: {
+              traffic: "vod",
+              phase: "cache_lock_probe",
+              lab: LABS.baseline,
+              edge_mode: "proxy_cache",
+            },
+          },
+        }
+      : {}),
+
+    ...(OPENRESTY_VUS > 0
+      ? {
+          openresty_runtime: {
+            executor: "constant-vus",
+            exec: "openrestyRuntime",
+            vus: OPENRESTY_VUS,
+            duration: __ENV.OPENRESTY_DURATION || __ENV.DURATION || "5m",
+            tags: {
+              traffic: "openresty",
+              phase: "steady",
+              lab: LABS.openresty,
+              edge_mode: "openresty_lua",
+            },
+          },
+        }
+      : {}),
+
+    ...(OPENRESTY_BURST_RATE > 0 || OPENRESTY_BURST_SPIKE > 0
+      ? {
+          openresty_gc_burst: {
+            executor: "ramping-arrival-rate",
+            exec: "openrestyGcBurst",
+            startRate: OPENRESTY_BURST_RATE,
+            timeUnit: "1s",
+            preAllocatedVUs: Number(__ENV.OPENRESTY_PREALLOCATED_VUS || 25),
+            maxVUs: Number(__ENV.OPENRESTY_MAX_VUS || 250),
+            stages: [
+              { target: OPENRESTY_BURST_RATE, duration: OPENRESTY_BURST_BASE_DURATION },
+              { target: OPENRESTY_BURST_SPIKE, duration: OPENRESTY_BURST_SPIKE_DURATION },
+              { target: OPENRESTY_BURST_RATE, duration: OPENRESTY_BURST_RECOVERY_DURATION },
+            ],
+            tags: {
+              traffic: "openresty",
+              phase: "gc_burst",
+              lab: LABS.openresty,
+              edge_mode: "openresty_lua",
+            },
           },
         }
       : {}),
@@ -157,15 +245,17 @@ export const options = {
 // -----------------------------
 export function liveSteady() {
   const channel = pick(LIVE_CHANNELS);
+  const tags = { experiment: "baseline_live" };
 
   if (__ITER % 15 === 0) {
-    requestAndCheck(`${baseUrl}/live/${channel}/master.m3u8`, OBJECTS.liveMaster.name);
+    requestAndCheck(`${baseUrl}/live/${channel}/master.m3u8`, OBJECTS.liveMaster.name, tags);
   }
 
-  requestAndCheck(`${baseUrl}/live/${channel}/live.m3u8`, OBJECTS.livePlaylist.name);
+  requestAndCheck(`${baseUrl}/live/${channel}/live.m3u8`, OBJECTS.livePlaylist.name, tags);
   requestAndCheck(
     `${baseUrl}/live/${channel}/seg_${(__ITER % 500) + 1}.ts`,
-    OBJECTS.liveSegment.name
+    OBJECTS.liveSegment.name,
+    tags
   );
 
   sleep(LIVE_SEG_S);
@@ -173,15 +263,17 @@ export function liveSteady() {
 
 export function vodSteady() {
   const title = pick(VOD_TITLES);
+  const tags = { experiment: "baseline_vod" };
 
   if (__ITER % 10 === 0) {
-    requestAndCheck(`${baseUrl}/vod/${title}/master.m3u8`, OBJECTS.vodManifest.name);
+    requestAndCheck(`${baseUrl}/vod/${title}/master.m3u8`, OBJECTS.vodManifest.name, tags);
   }
 
-  requestAndCheck(`${baseUrl}/vod/${title}/playlist.m3u8`, OBJECTS.vodPlaylist.name);
+  requestAndCheck(`${baseUrl}/vod/${title}/playlist.m3u8`, OBJECTS.vodPlaylist.name, tags);
   requestAndCheck(
     `${baseUrl}/vod/${title}/seg_${String((__ITER % 1000) + 1).padStart(4, "0")}.ts`,
-    OBJECTS.vodSegment.name
+    OBJECTS.vodSegment.name,
+    tags
   );
 
   sleep(VOD_SEG_S);
@@ -189,14 +281,16 @@ export function vodSteady() {
 
 export function liveJoiner() {
   const channel = pick(LIVE_CHANNELS);
+  const tags = { experiment: "baseline_live_join" };
 
-  requestAndCheck(`${baseUrl}/live/${channel}/master.m3u8`, OBJECTS.liveMaster.name);
-  requestAndCheck(`${baseUrl}/live/${channel}/live.m3u8`, OBJECTS.livePlaylist.name);
+  requestAndCheck(`${baseUrl}/live/${channel}/master.m3u8`, OBJECTS.liveMaster.name, tags);
+  requestAndCheck(`${baseUrl}/live/${channel}/live.m3u8`, OBJECTS.livePlaylist.name, tags);
 
   for (let i = 0; i < 3; i++) {
     requestAndCheck(
       `${baseUrl}/live/${channel}/seg_${1200 + i}.ts`,
-      OBJECTS.liveSegment.name
+      OBJECTS.liveSegment.name,
+      tags
     );
   }
 }
@@ -204,11 +298,43 @@ export function liveJoiner() {
 export function vodLockProbe() {
   requestAndCheck(
     `${baseUrl}/vod/${HOT_VOD_TITLE}/playlist.m3u8?variant=${HOT_VOD_VARIANT}`,
-    OBJECTS.vodPlaylist.name
+    OBJECTS.vodPlaylist.name,
+    { experiment: "baseline_vod_lock_probe", variant: HOT_VOD_VARIANT }
   );
   requestAndCheck(
     `${baseUrl}/vod/${HOT_VOD_TITLE}/seg_${HOT_VOD_SEGMENT}.ts?variant=${HOT_VOD_VARIANT}`,
-    OBJECTS.vodSegment.name
+    OBJECTS.vodSegment.name,
+    { experiment: "baseline_vod_lock_probe", variant: HOT_VOD_VARIANT }
+  );
+}
+
+export function openrestyRuntime() {
+  if (__ITER % 2 === 0) {
+    requestAndCheck(
+      `${baseUrl}/openresty/lua/transform?repeat=48&width=6&decode=1&seed=vod${__VU}`,
+      OBJECTS.openrestyTransform.name,
+      { experiment: "lua_transform", openresty_target: "transform" }
+    );
+  } else {
+    requestAndCheck(
+      `${baseUrl}/openresty/lua/policy?tenant=demo&title=movie${(__ITER % 3) + 1}&variant=${pick([
+        "540p",
+        "720p",
+        "1080p",
+      ])}&region=${pick(["us", "eu", "apac"])}&entitlements=vod,hd,edge`,
+      OBJECTS.openrestyPolicy.name,
+      { experiment: "lua_policy", openresty_target: "policy" }
+    );
+  }
+
+  sleep(OPENRESTY_SEG_S);
+}
+
+export function openrestyGcBurst() {
+  requestAndCheck(
+    `${baseUrl}/openresty/lua/transform?repeat=160&width=12&decode=1&seed=burst${__VU}`,
+    OBJECTS.openrestyGcProbe.name,
+    { experiment: "lua_gc_burst", openresty_target: "transform" }
   );
 }
 

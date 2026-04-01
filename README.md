@@ -3,7 +3,7 @@
 This playground gives you one Docker Compose project with:
 
 - `workspace`: the devcontainer and main driver, with `k6`, Python, JupyterLab, and Docker CLI.
-- `edge`: an `nginx` reverse proxy that fronts the origin service.
+- `edge`: an OpenResty reverse proxy with Lua instrumentation, cache policy probes, and Prometheus metrics.
 - `origin`: a small FastAPI app with sample endpoints and Prometheus metrics.
 - `prometheus`: stores origin scrape data and accepts k6 remote-write metrics.
 
@@ -52,6 +52,11 @@ That drops you into the same `workspace` container the devcontainer uses.
 ## Endpoints
 
 - Edge: `http://localhost:8080`
+- Edge metrics: `http://localhost:8080/metrics`
+- OpenResty Lua transform endpoint: `http://localhost:8080/openresty/lua/transform`
+- OpenResty Lua policy endpoint: `http://localhost:8080/openresty/lua/policy`
+- Metadata service: `http://localhost:9100/metadata`
+- Kafka mock event sink: `http://localhost:9300/events`
 - Origin: `http://localhost:8000`
 - Prometheus UI: `http://localhost:9090`
 - JupyterLab: `http://localhost:8888`
@@ -69,7 +74,20 @@ That sends k6 metrics to Prometheus using the experimental Prometheus remote-wri
 To override the load profile:
 
 ```bash
-VUS=20 DURATION=2m bash scripts/run-smoke.sh
+TOTAL_VUS=20 DURATION=2m bash scripts/run-smoke.sh
+```
+
+To exercise the OpenResty Lua/runtime path without mixing it into the baseline cache notebook:
+
+```bash
+TOTAL_VUS=20 \
+OPENRESTY_VUS=10 \
+OPENRESTY_BURST_RATE=5 \
+OPENRESTY_BURST_SPIKE=40 \
+OPENRESTY_BURST_BASE_DURATION=15s \
+OPENRESTY_BURST_SPIKE_DURATION=15s \
+OPENRESTY_BURST_RECOVERY_DURATION=15s \
+bash scripts/run-smoke.sh
 ```
 
 ## Query Prometheus With Python
@@ -80,9 +98,17 @@ Inside `workspace`:
 python python/examples/query_prometheus.py
 ```
 
+For a quick slowdown attribution snapshot without opening Jupyter:
+
+```bash
+python python/examples/query_openresty_attribution.py
+```
+
 Or open the notebook:
 
 - `python/notebooks/k6_prometheus_analysis.ipynb`
+- `python/notebooks/openresty_edge_analysis.ipynb`
+- `python/notebooks/openresty_external_io_analysis.ipynb`
 
 ## PromQL Examples For Live And VOD
 
@@ -106,7 +132,125 @@ Request rate for VOD traffic only:
 
 ```promql
 sum by (name) (
-  rate(k6_http_reqs_total{name=~"vod_manifest|vod_segment"}[1m])
+  rate(k6_http_reqs_total{name=~"vod_manifest|vod_playlist|vod_segment"}[1m])
+)
+```
+
+Baseline cache-only request rate:
+
+```promql
+sum by (name) (
+  rate(k6_http_reqs_total{lab="edge_cache_baseline"}[1m])
+)
+```
+
+OpenResty-only request rate:
+
+```promql
+sum by (name) (
+  rate(k6_http_reqs_total{lab="openresty_runtime"}[1m])
+)
+```
+
+OpenResty edge request rate by Lua target:
+
+```promql
+sum by (route_family, target_kind) (
+  rate(openresty_edge_requests_total[1m])
+)
+```
+
+OpenResty edge request p95:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, route_family, target_kind) (
+    rate(openresty_edge_request_duration_seconds_bucket[5m])
+  )
+)
+```
+
+OpenResty access/content phase p95:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, route_family, target_kind) (
+    rate(openresty_edge_lua_access_duration_seconds_bucket[5m])
+  )
+)
+```
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, route_family, target_kind) (
+    rate(openresty_edge_lua_content_duration_seconds_bucket[5m])
+  )
+)
+```
+
+OpenResty header-filter phase p95:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, target_kind) (
+    rate(openresty_edge_header_filter_duration_seconds_bucket[5m])
+  )
+)
+```
+
+OpenResty metadata fetch rate:
+
+```promql
+sum by (target_kind, outcome) (
+  rate(openresty_edge_metadata_requests_total[1m])
+)
+```
+
+OpenResty metadata fetch p95:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, target_kind, outcome) (
+    rate(openresty_edge_metadata_duration_seconds_bucket[5m])
+  )
+)
+```
+
+OpenResty Redis connect p95 by phase:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, target_kind, phase, outcome) (
+    rate(openresty_edge_redis_connect_duration_seconds_bucket[5m])
+  )
+)
+```
+
+OpenResty Redis command p95 by phase and operation:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, target_kind, phase, operation, outcome) (
+    rate(openresty_edge_redis_command_duration_seconds_bucket[5m])
+  )
+)
+```
+
+Kafka-mock publish p95:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, target_kind, outcome) (
+    rate(openresty_edge_kafka_mock_publish_duration_seconds_bucket[5m])
+  )
 )
 ```
 
