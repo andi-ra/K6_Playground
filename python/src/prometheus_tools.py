@@ -36,6 +36,11 @@ def _request(
         )
         response.raise_for_status()
         return response
+    except requests.HTTPError as exc:
+        message = exc.response.text if exc.response is not None else str(exc)
+        raise RuntimeError(
+            f"Prometheus request failed at {resolved_url}{path} with params {params}: {message}"
+        ) from exc
     except requests.RequestException as exc:
         raise RuntimeError(
             "Prometheus is not reachable at "
@@ -108,7 +113,7 @@ def query_range(
     for item in series:
         frame = pd.DataFrame(item["values"], columns=["timestamp", "value"])
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], unit="s", utc=True)
-        frame["value"] = pd.to_numeric(frame["value"])
+        frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
 
         for key, value in item.get("metric", {}).items():
             frame[key] = value

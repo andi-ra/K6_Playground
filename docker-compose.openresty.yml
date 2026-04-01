@@ -1,4 +1,4 @@
-name: k6-playground
+name: k6-playground-openresty
 
 services:
   workspace:
